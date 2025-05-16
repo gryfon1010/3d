@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=dev            direction: new THREE.Vector3(),
+            moveForward: false,
+            moveBackward: false,
+            moveLeft: false,
+            moveRight: false,
+            canJump: false,
+            prevTime: performance.now(),
+            speed: 0.8,
+            collisionRadius: 0.25  // Further reduced collision radius for better movement through tight spaces, initial-scale=1.0">
+    <title>3D Gallery Viewer</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f0f0;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #controlsContainer {
+            background-color: #ffffff;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            margin-top: 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        input[type="file"] {
+            border: 1px solid #ddd;
+            padding: 10px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        input[type="file"]::file-selector-button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        input[type="file"]::file-selector-button:hover {
+            background-color: #0056b3;
+        }
+        #loaderInfo {
+            font-size: 0.9em;
+            color: #555;
+        }
+        #canvasContainer {
+            width: 95%;
+            
+            height: 75vh;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            background-color: #e0e0e0;
+        }
+        canvas {
+            display: block;
+            width: 100% !important;
+            height: 100% !important;
+        }
+        #errorMessage {
+            color: red;
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #ffebee;
+            border: 1px solid #ef9a9a;
+            border-radius: 4px;
+            display: none;
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    
+    <div id="controlsContainer">
+        <span id="loaderInfo">Loading model...</span>
+    </div>
+    <div id="errorMessage"></div>
+    <div id="canvasContainer"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.153.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.153.0/examples/jsm/",
+            "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.18.0/dist/lil-gui.esm.min.js"
+        }
+    }
+    </script>
+    <!-- lil-gui for lighting/reflection controls (now as ES module) -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+        import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+        import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import GUI from 'lil-gui';
+
+        // Declare variables in a wider scope
+        let scene, camera, renderer, controls, model;
+        let floorMarkers = []; // Array to store floor markers
+        let raycastMarkers = []; // Array to store invisible circles for raycasting
+        const MARKER_SPACING = 0.5; // Reduced spacing between markers
+        const MARKER_RADIUS = 0.05; // Reduced size of the markers
+        const MARKER_COLOR = 0x00ff00; // Color of the markers (green)
+        const canvasContainer = document.getElementById('canvasContainer');
+        const fileInput = document.getElementById('glbFile');
+        const loaderInfo = document.getElementById('loaderInfo');
+        const errorMessage = document.getElementById('errorMessage');
+        let gui; // Make GUI globally accessible
+        let fpControls = {
+            enabled: false,
+            velocity: new THREE.Vector3(),
+            direction: new THREE.Vector3(),
+            moveForward: false,
+            moveBackward: false,
+            moveLeft: false,
+            moveRight: false,
+            canJump: false,
+            prevTime: performance.now(),
+            speed: 0.8,
+            collisionRadius: 0.3  // Further reduced collision radius for better movement through tight spaces
+        };
+
+        // Function to initialize the Three.js scene
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xdddddd);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(60, canvasContainer.clientWidth / canvasContainer.clientHeight, 0.1, 2000);
+            camera.position.set(0, 2, 10);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight);
+            
+            // Enhance renderer quality
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.physicallyCorrectLights = true;
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            canvasContainer.appendChild(renderer.domElement);
+
+            // OrbitControls for camera manipulation (default)
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 0.1;
+            controls.maxDistance = 1000;
+            controls.target.set(0, 0, 0);
+            controls.update();
+            // Log camera and target on every change
+            controls.addEventListener('change', () => {
+                console.log('Camera position:', camera.position.clone(), 'Controls target:', controls.target.clone());
+            });
+
+            // First-person controls event listeners
+            window.addEventListener('keydown', onKeyDown);
+            window.addEventListener('keyup', onKeyUp);
+            canvasContainer.addEventListener('click', () => {
+                if (fpControls.enabled) {
+                    canvasContainer.requestPointerLock();
+                }
+            });
+
+            // Add basic lighting
+            // Set lighting to match GUI screenshot
+            const ambientLight = new THREE.AmbientLight(0xffffff, 2);
+            scene.add(ambientLight);
+
+            // Add a directional light as a key light
+            const dirLight = new THREE.DirectionalLight(0xffffff, 3);
+            dirLight.position.set(-33.8, -28.9, -42.9);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // Add a point light for fill
+            const pointLight = new THREE.PointLight(0xffffff, 2);
+            pointLight.position.set(-15.9, -6.1, 3.3);
+            scene.add(pointLight);
+
+            // Set renderer tone mapping and exposure
+            renderer.toneMapping = THREE.CineonToneMapping;
+            renderer.toneMappingExposure = 1.79;
+
+            // Remove unwanted floor reflections or white light
+            // After model is loaded, set floor material roughness/metalness and remove emissive/reflection
+            function fixFloorMaterial() {
+                if (!model) return;
+                model.traverse(node => {
+                    if (node.isMesh && node.name && node.name.toLowerCase().includes('floor')) {
+                        let mat = node.material;
+                        if (Array.isArray(mat)) {
+                            mat.forEach(m => adjustFloorMaterial(m));
+                        } else {
+                            adjustFloorMaterial(mat);
+                        }
+                    }
+                });
+            }
+            function adjustFloorMaterial(mat) {
+                if (!mat) return;
+                if ('roughness' in mat) mat.roughness = 1.0;
+                if ('metalness' in mat) mat.metalness = 0.0;
+                if ('envMapIntensity' in mat) mat.envMapIntensity = 0.0;
+                if ('emissiveIntensity' in mat) mat.emissiveIntensity = 0.0;
+                if ('emissive' in mat) mat.emissive.set(0x000000);
+                mat.needsUpdate = true;
+            }
+            // Call after model load
+            const origOnModelLoad = window.onModelLoad;
+            window.onModelLoad = function() {
+                if (origOnModelLoad) origOnModelLoad();
+                fixFloorMaterial();
+            };
+
+            // ---- GUI Controls for Lighting and Reflection ----
+            gui = new GUI({ title: 'Lighting & Reflection', width: 320 });
+            gui.domElement.style.position = 'fixed';
+            gui.domElement.style.top = '20px';
+            gui.domElement.style.right = '20px';
+            gui.domElement.style.zIndex = '1002';
+
+            // Scene Background Controls
+            const sceneFolder = gui.addFolder('Scene');
+            const sceneParams = {
+                backgroundColor: scene.background.getHex(),
+                backgroundIntensity: 1.0,
+                fogEnabled: false,
+                fogColor: 0xcccccc,
+                fogNear: 10,
+                fogFar: 100
+            };
+
+            sceneFolder.addColor(sceneParams, 'backgroundColor').name('Background').onChange(v => {
+                scene.background.set(v);
+            });
+
+            // Fog controls
+            sceneFolder.add(sceneParams, 'fogEnabled').name('Enable Fog').onChange(v => {
+                if (v) {
+                    scene.fog = new THREE.Fog(sceneParams.fogColor, sceneParams.fogNear, sceneParams.fogFar);
+                } else {
+                    scene.fog = null;
+                }
+            });
+            sceneFolder.addColor(sceneParams, 'fogColor').name('Fog Color').onChange(v => {
+                if (scene.fog) scene.fog.color.set(v);
+            });
+            sceneFolder.add(sceneParams, 'fogNear', 1, 50).name('Fog Near').onChange(v => {
+                if (scene.fog) scene.fog.near = v;
+            });
+            sceneFolder.add(sceneParams, 'fogFar', 10, 200).name('Fog Far').onChange(v => {
+                if (scene.fog) scene.fog.far = v;
+            });
+
+            // Ambient Light Controls
+            const ambientFolder = gui.addFolder('Ambient Light');
+            ambientFolder.addColor({ color: ambientLight.color.getHex() }, 'color').name('Color').onChange(v => { ambientLight.color.set(v); });
+            ambientFolder.add(ambientLight, 'intensity', 0, 5, 0.01).name('Intensity');
+            
+            // Add Hemisphere Light (new)
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.0);
+            hemiLight.position.set(0, 20, 0);
+            scene.add(hemiLight);
+            
+            // Hemisphere Light Controls
+            const hemiFolder = gui.addFolder('Hemisphere Light');
+            hemiFolder.addColor({ color: hemiLight.color.getHex() }, 'color').name('Sky Color').onChange(v => { hemiLight.color.set(v); });
+            hemiFolder.addColor({ color: hemiLight.groundColor.getHex() }, 'color').name('Ground Color').onChange(v => { hemiLight.groundColor.set(v); });
+            hemiFolder.add(hemiLight, 'intensity', 0, 2, 0.01).name('Intensity');
+            
+            // Directional Light Controls
+            const dirFolder = gui.addFolder('Directional Light');
+            dirFolder.addColor({ color: dirLight.color.getHex() }, 'color').name('Color').onChange(v => { dirLight.color.set(v); });
+            dirFolder.add(dirLight, 'intensity', 0, 5, 0.01).name('Intensity');
+            dirFolder.add(dirLight.position, 'x', -50, 50, 0.1).name('Pos X');
+            dirFolder.add(dirLight.position, 'y', -50, 50, 0.1).name('Pos Y');
+            dirFolder.add(dirLight.position, 'z', -50, 50, 0.1).name('Pos Z');
+            
+            // Shadow Controls for Directional Light
+            const dirShadowFolder = dirFolder.addFolder('Shadows');
+            dirShadowFolder.add(dirLight, 'castShadow').name('Cast Shadows');
+            dirShadowFolder.add(dirLight.shadow.camera, 'near', 0.1, 10).name('Shadow Near');
+            dirShadowFolder.add(dirLight.shadow.camera, 'far', 10, 100).name('Shadow Far');
+            dirShadowFolder.add(dirLight.shadow.camera, 'left', -20, 0).name('Shadow Left');
+            dirShadowFolder.add(dirLight.shadow.camera, 'right', 0, 20).name('Shadow Right');
+            dirShadowFolder.add(dirLight.shadow.camera, 'top', 0, 20).name('Shadow Top');
+            dirShadowFolder.add(dirLight.shadow.camera, 'bottom', -20, 0).name('Shadow Bottom');
+            dirShadowFolder.add(dirLight.shadow.mapSize, 'width', 512, 4096, 512).name('Resolution Width').onChange(v => {
+                dirLight.shadow.map?.dispose();
+                dirLight.shadow.map = null;
+            });
+            dirShadowFolder.add(dirLight.shadow.mapSize, 'height', 512, 4096, 512).name('Resolution Height').onChange(v => {
+                dirLight.shadow.map?.dispose();
+                dirLight.shadow.map = null;
+            });
+            dirShadowFolder.add(dirLight.shadow, 'bias', -0.01, 0.01, 0.0001).name('Bias');
+            dirShadowFolder.add(dirLight.shadow, 'radius', 0, 15, 0.5).name('Blur Radius');
+            
+            // Create a helper to visualize directional light
+            const dirLightHelper = new THREE.DirectionalLightHelper(dirLight, 5);
+            dirLightHelper.visible = false;
+            scene.add(dirLightHelper);
+            const lightHelperParams = { showDirLightHelper: false };
+            dirFolder.add(lightHelperParams, 'showDirLightHelper').name('Show Helper').onChange(v => {
+                dirLightHelper.visible = v;
+            });
+            
+            // Point Light Controls
+            const pointFolder = gui.addFolder('Point Light');
+            pointFolder.addColor({ color: pointLight.color.getHex() }, 'color').name('Color').onChange(v => { pointLight.color.set(v); });
+            pointFolder.add(pointLight, 'intensity', 0, 5, 0.01).name('Intensity');
+            pointFolder.add(pointLight.position, 'x', -20, 20, 0.1).name('Pos X');
+            pointFolder.add(pointLight.position, 'y', -20, 20, 0.1).name('Pos Y');
+            pointFolder.add(pointLight.position, 'z', -20, 20, 0.1).name('Pos Z');
+            pointFolder.add(pointLight, 'distance', 0, 100, 1).name('Distance');
+            pointFolder.add(pointLight, 'decay', 0, 10, 0.1).name('Decay');
+            
+            // Enable shadows for point light
+            pointLight.castShadow = true;
+            // Shadow Controls for Point Light
+            const pointShadowFolder = pointFolder.addFolder('Shadows');
+            pointShadowFolder.add(pointLight, 'castShadow').name('Cast Shadows');
+            pointShadowFolder.add(pointLight.shadow.camera, 'near', 0.1, 10).name('Shadow Near');
+            pointShadowFolder.add(pointLight.shadow.camera, 'far', 1, 100).name('Shadow Far');
+            pointShadowFolder.add(pointLight.shadow.mapSize, 'width', 512, 4096, 512).name('Resolution Width').onChange(v => {
+                pointLight.shadow.map?.dispose();
+                pointLight.shadow.map = null;
+            });
+            pointShadowFolder.add(pointLight.shadow.mapSize, 'height', 512, 4096, 512).name('Resolution Height').onChange(v => {
+                pointLight.shadow.map?.dispose();
+                pointLight.shadow.map = null;
+            });
+            pointShadowFolder.add(pointLight.shadow, 'bias', -0.01, 0.01, 0.0001).name('Bias');
+            pointShadowFolder.add(pointLight.shadow, 'radius', 0, 15, 0.5).name('Blur Radius');
+            
+            // Create a helper to visualize point light
+            const pointLightHelper = new THREE.PointLightHelper(pointLight, 1);
+            pointLightHelper.visible = false;
+            scene.add(pointLightHelper);
+            const pointHelperParams = { showPointLightHelper: false };
+            pointFolder.add(pointHelperParams, 'showPointLightHelper').name('Show Helper').onChange(v => {
+                pointLightHelper.visible = v;
+            });
+            
+            // Add Spot Light (new)
+            const spotLight = new THREE.SpotLight(0xffffff, 0.0);
+            spotLight.position.set(0, 10, 10);
+            spotLight.angle = Math.PI / 6;
+            spotLight.penumbra = 0.2;
+            spotLight.decay = 2;
+            spotLight.distance = 50;
+            spotLight.castShadow = true;
+            scene.add(spotLight);
+            
+            // Spot Light Controls
+            const spotFolder = gui.addFolder('Spot Light');
+            spotFolder.addColor({ color: spotLight.color.getHex() }, 'color').name('Color').onChange(v => { spotLight.color.set(v); });
+            spotFolder.add(spotLight, 'intensity', 0, 5, 0.01).name('Intensity');
+            spotFolder.add(spotLight.position, 'x', -50, 50, 0.1).name('Pos X');
+            spotFolder.add(spotLight.position, 'y', -50, 50, 0.1).name('Pos Y');
+            spotFolder.add(spotLight.position, 'z', -50, 50, 0.1).name('Pos Z');
+            spotFolder.add(spotLight, 'distance', 0, 200, 1).name('Distance');
+            spotFolder.add(spotLight, 'angle', 0, Math.PI / 2, 0.01).name('Angle');
+            spotFolder.add(spotLight, 'penumbra', 0, 1, 0.01).name('Penumbra');
+            spotFolder.add(spotLight, 'decay', 0, 10, 0.1).name('Decay');
+            
+            // Shadow Controls for Spot Light
+            const spotShadowFolder = spotFolder.addFolder('Shadows');
+            spotShadowFolder.add(spotLight, 'castShadow').name('Cast Shadows');
+            spotShadowFolder.add(spotLight.shadow.camera, 'near', 0.1, 10).name('Shadow Near');
+            spotShadowFolder.add(spotLight.shadow.camera, 'far', 10, 200).name('Shadow Far');
+            spotShadowFolder.add(spotLight.shadow.mapSize, 'width', 512, 4096, 512).name('Resolution Width').onChange(v => {
+                spotLight.shadow.map?.dispose();
+                spotLight.shadow.map = null;
+            });
+            spotShadowFolder.add(spotLight.shadow.mapSize, 'height', 512, 4096, 512).name('Resolution Height').onChange(v => {
+                spotLight.shadow.map?.dispose();
+                spotLight.shadow.map = null;
+            });
+            spotShadowFolder.add(spotLight.shadow, 'bias', -0.01, 0.01, 0.0001).name('Bias');
+            spotShadowFolder.add(spotLight.shadow, 'radius', 0, 15, 0.5).name('Blur Radius');
+            
+            // Create a helper to visualize spot light
+            const spotLightHelper = new THREE.SpotLightHelper(spotLight);
+            spotLightHelper.visible = false;
+            scene.add(spotLightHelper);
+            const spotHelperParams = { showSpotLightHelper: false };
+            spotFolder.add(spotHelperParams, 'showSpotLightHelper').name('Show Helper').onChange(v => {
+                spotLightHelper.visible = v;
+                if (v) spotLightHelper.update();
+            });
+            
+            // Floor Material Controls
+            const floorFolder = gui.addFolder('Floor Material');
+            const floorParams = {
+                roughness: 0.02,
+                metalness: 0.0,
+                envMapIntensity: 0.0,
+                emissiveIntensity: 0.0,
+                emissiveColor: 0x000000,
+                refreshMaterial: function() { fixFloorMaterial(); }
+            };
+            
+            floorFolder.add(floorParams, 'roughness', 0, 1, 0.01).name('Roughness').onChange(v => {
+                updateFloorMaterial('roughness', v);
+            });
+            floorFolder.add(floorParams, 'metalness', 0, 1, 0.01).name('Metalness').onChange(v => {
+                updateFloorMaterial('metalness', v);
+            });
+            floorFolder.add(floorParams, 'envMapIntensity', 0, 1, 0.01).name('Reflection').onChange(v => {
+                updateFloorMaterial('envMapIntensity', v);
+            });
+            floorFolder.add(floorParams, 'emissiveIntensity', 0, 1, 0.01).name('Emission Int').onChange(v => {
+                updateFloorMaterial('emissiveIntensity', v);
+            });
+            floorFolder.addColor(floorParams, 'emissiveColor').name('Emission Color').onChange(v => {
+                updateFloorMaterialColor('emissive', v);
+            });
+            floorFolder.add(floorParams, 'refreshMaterial').name('Reset Floor Material');
+            
+            // Function to update floor material properties
+            function updateFloorMaterial(property, value) {
+                if (!model) return;
+                model.traverse(node => {
+                    if (node.isMesh && node.name && node.name.toLowerCase().includes('floor')) {
+                        let mat = node.material;
+                        if (Array.isArray(mat)) {
+                            mat.forEach(m => {
+                                if (property in m) m[property] = value;
+                                m.needsUpdate = true;
+                            });
+                        } else if (mat && property in mat) {
+                            mat[property] = value;
+                            mat.needsUpdate = true;
+                        }
+                    }
+                });
+            }
+            
+            // Function to update floor material color properties
+            function updateFloorMaterialColor(property, value) {
+                if (!model) return;
+                model.traverse(node => {
+                    if (node.isMesh && node.name && node.name.toLowerCase().includes('floor')) {
+                        let mat = node.material;
+                        if (Array.isArray(mat)) {
+                            mat.forEach(m => {
+                                if (property in m) m[property].set(value);
+                                m.needsUpdate = true;
+                            });
+                        } else if (mat && property in mat) {
+                            mat[property].set(value);
+                            mat.needsUpdate = true;
+                        }
+                    }
+                });
+            }
+
+            // Renderer Controls (expanded)
+            const rendererFolder = gui.addFolder('Renderer');
+            rendererFolder.add(renderer, 'toneMappingExposure', 0, 5, 0.01).name('Exposure');
+            rendererFolder.add(renderer, 'toneMapping', {
+                None: THREE.NoToneMapping,
+                Linear: THREE.LinearToneMapping,
+                Reinhard: THREE.ReinhardToneMapping,
+                Cineon: THREE.CineonToneMapping,
+                ACESFilmic: THREE.ACESFilmicToneMapping
+            }).name('Tone Mapping').onChange(v => { renderer.toneMapping = Number(v); });
+            rendererFolder.add(renderer, 'outputEncoding', {
+                Linear: THREE.LinearEncoding,
+                sRGB: THREE.sRGBEncoding
+            }).name('Output Encoding').onChange(v => {
+                renderer.outputEncoding = Number(v);
+                // Update all textures
+                if (model) {
+                    model.traverse(function(node) {
+                        if (node.isMesh && node.material) {
+                            const mats = Array.isArray(node.material) ? node.material : [node.material];
+                            mats.forEach(mat => {
+                                if (mat.map) mat.map.needsUpdate = true;
+                                if (mat.emissiveMap) mat.emissiveMap.needsUpdate = true;
+                                if (mat.bumpMap) mat.bumpMap.needsUpdate = true;
+                                if (mat.normalMap) mat.normalMap.needsUpdate = true;
+                                if (mat.displacementMap) mat.displacementMap.needsUpdate = true;
+                                if (mat.roughnessMap) mat.roughnessMap.needsUpdate = true;
+                                if (mat.metalnessMap) mat.metalnessMap.needsUpdate = true;
+                                if (mat.alphaMap) mat.alphaMap.needsUpdate = true;
+                                if (mat.envMap) mat.envMap.needsUpdate = true;
+                                mat.needsUpdate = true;
+                            });
+                        }
+                    });
+                }
+            });
+            rendererFolder.add(renderer.shadowMap, 'enabled').name('Shadows Enabled');
+            rendererFolder.add(renderer.shadowMap, 'type', {
+                'Basic': THREE.BasicShadowMap,
+                'PCF': THREE.PCFShadowMap,
+                'PCF Soft': THREE.PCFSoftShadowMap,
+                'VSM': THREE.VSMShadowMap
+            }).name('Shadow Type').onChange(v => {
+                renderer.shadowMap.type = Number(v);
+                renderer.shadowMap.needsUpdate = true;
+            });
+
+            // Environment Controls (expanded)
+            const envFolder = gui.addFolder('Environment');
+            const envMapTypes = {
+                None: 'none',
+                Room: 'room'  // You can add more types if needed
+            };
+            const envParams = {
+                envType: scene.environment ? 'room' : 'none',
+                envIntensity: scene.environment ? 1.0 : 0.0
+            };
+
+            envFolder.add(envParams, 'envType', envMapTypes).name('Environment Type').onChange(v => {
+                if (v === 'none') {
+                    scene.environment = null;
+                } else if (v === 'room') {
+                    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+                    pmremGenerator.compileEquirectangularShader();
+
+                    const roomEnv = new RoomEnvironment();
+                    const envMap = pmremGenerator.fromScene(roomEnv).texture;
+                    scene.environment = envMap;
+                    scene.environment.intensity = envParams.envIntensity;
+
+                    pmremGenerator.dispose();
+                    roomEnv.dispose();
+                }
+            });
+
+            envFolder.add(envParams, 'envIntensity', 0, 5, 0.01).name('Environment Intensity').onChange(v => {
+                if (scene.environment) {
+                    scene.environment.intensity = v;
+                }
+            });
+
+            // Update helpers in animation loop
+            const updateHelpers = () => {
+                if (dirLightHelper.visible) dirLightHelper.update();
+                if (pointLightHelper.visible) pointLightHelper.update();
+                if (spotLightHelper.visible) spotLightHelper.update();
+            };
+
+            // Add helper update to animate function
+            const originalAnimate = animate;
+            animate = function() {
+                originalAnimate();
+                updateHelpers();
+            };
+
+            gui.close(); // Start closed, user can open
+            
+
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize, false);
+
+            // Start the animation loop
+            animate();
+        }
+
+        // Function to handle window resize
+        function onWindowResize() {
+            if (camera && renderer && canvasContainer) {
+                const width = canvasContainer.clientWidth;
+                const height = canvasContainer.clientHeight;
+                if (width > 0 && height > 0) {
+                    camera.aspect = width / height;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(width, height);
+                }
+            }
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            if (fpControls.enabled) {
+                updateFirstPersonControls();
+            } else if (controls) {
+                controls.update();
+            }
+            // --- Update marker visibility based on camera direction ---
+            if (typeof floorMarkers !== 'undefined' && floorMarkers.length > 0) {
+                const cameraDir = new THREE.Vector3();
+                camera.getWorldDirection(cameraDir);
+                cameraDir.y = 0; // Ignore vertical angle
+                cameraDir.normalize();
+                const cameraPos = camera.position.clone();
+                const FOV_ANGLE = 20 * Math.PI / 180; // 20 degrees in radians
+                floorMarkers.forEach(marker => {
+                    // Vector from camera to marker
+                    const toMarker = marker.position.clone().sub(cameraPos);
+                    toMarker.y = 0;
+                    toMarker.normalize();
+                    // Angle between camera forward and marker direction
+                    const angle = cameraDir.angleTo(toMarker);
+                    marker.visible = angle < FOV_ANGLE;
+                });
+            }
+            if (renderer && scene && camera) renderer.render(scene, camera);
+        }
+
+        // --- First Person Controls Implementation ---
+        function enableFirstPersonControls(enable) {
+            fpControls.enabled = enable;
+            if (enable) {
+                controls.enabled = false;
+                syncYawPitchToCamera();
+                canvasContainer.requestPointerLock();
+            } else {
+                controls.enabled = true;
+                document.exitPointerLock();
+            }
+        }
+
+        // Ensure yaw/pitch are initialized to match camera direction on first enable
+        function syncYawPitchToCamera() {
+            // Get direction vector from camera
+            const dir = new THREE.Vector3();
+            camera.getWorldDirection(dir);
+            yaw = Math.atan2(-dir.x, -dir.z);
+            pitch = Math.asin(dir.y);
+        }
+
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'ArrowUp':
+                case 'KeyW':
+                    fpControls.moveForward = true; break;
+                case 'ArrowDown':
+                case 'KeyS':
+                    fpControls.moveBackward = true; break;
+                case 'ArrowLeft':
+                case 'KeyA':
+                    fpControls.moveLeft = true; break;
+                case 'ArrowRight':
+                case 'KeyD':
+                    fpControls.moveRight = true; break;
+                case 'Escape':
+                    enableFirstPersonControls(false); break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'ArrowUp':
+                case 'KeyW':
+                    fpControls.moveForward = false; break;
+                case 'ArrowDown':
+                case 'KeyS':
+                    fpControls.moveBackward = false; break;
+                case 'ArrowLeft':
+                case 'KeyA':
+                    fpControls.moveLeft = false; break;
+                case 'ArrowRight':
+                case 'KeyD':
+                    fpControls.moveRight = false; break;
+            }
+        }
+
+        // Mouse look
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === canvasContainer && fpControls.enabled) {
+                document.addEventListener('mousemove', onMouseMove, false);
+            } else {
+                document.removeEventListener('mousemove', onMouseMove, false);
+            }
+        });
+
+        let yaw = 0, pitch = 0;
+        function onMouseMove(event) {
+            if (!fpControls.enabled) return;
+            const movementX = event.movementX || 0;
+            const movementY = event.movementY || 0;
+            yaw -= movementX * 0.002;  // Inverted horizontal mouse movement
+            pitch -= movementY * 0.002; // Keep this as -= for natural vertical look
+            pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
+        }
+
+        function updateFirstPersonControls() {
+            const time = performance.now();
+            const delta = (time - fpControls.prevTime) / 1000;
+            fpControls.prevTime = time;
+
+            // Get forward direction from camera (ignore pitch)
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            forward.y = 0;
+            forward.normalize();
+
+            // Calculate right vector from forward
+            const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+
+            // Calculate movement vector based on input
+            const move = new THREE.Vector3();
+            
+            // Forward/back movement
+            if (fpControls.moveForward) move.addScaledVector(forward, fpControls.speed * delta);
+            if (fpControls.moveBackward) move.addScaledVector(forward, -fpControls.speed * delta);
+            
+            // Left/right movement
+            if (fpControls.moveLeft) move.addScaledVector(right, -fpControls.speed * delta);
+            if (fpControls.moveRight) move.addScaledVector(right, fpControls.speed * delta);
+
+            // Apply camera rotation
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y = yaw;
+            camera.rotation.x = pitch;
+
+            // Calculate new position with collision detection
+            let newPos = camera.position.clone().add(move);
+
+            // Enhanced collision detection for curved walls
+            if (model) {
+                const cameraBox = new THREE.Box3();
+                const cameraSize = fpControls.collisionRadius * 2;
+                cameraBox.setFromCenterAndSize(newPos, new THREE.Vector3(cameraSize, cameraSize, cameraSize));
+
+                let collision = false;
+                let collisionCount = 0;
+                let collidingMeshes = [];
+
+                model.traverse((node) => {
+                    if (node.isMesh) {
+                        // Only check collision with walls and large objects
+                        if (node.name && (
+                            node.name.includes('Wall') ||
+                            node.name.includes('Floor') ||
+                            node.name.includes('Display_Stand') ||
+                            node.name.includes('Sculpture') ||
+                            node.name.includes('Bench')
+                        )) {
+                            const meshBox = new THREE.Box3().setFromObject(node);
+                            if (cameraBox.intersectsBox(meshBox)) {
+                                collision = true;
+                                collisionCount++;
+                                collidingMeshes.push(node.name || 'unnamed mesh');
+                            }
+                        }
+                    }
+                });
+
+                // Debug logging
+                if (collision) {
+                    console.log('Collision detected!');
+                    console.log('Number of collisions:', collisionCount);
+                    console.log('Colliding with meshes:', collidingMeshes);
+                    console.log('Attempted position:', newPos);
+                    console.log('Current position:', camera.position);
+                    console.log('Movement vector:', move);
+                }
+
+                if (!collision) {
+                    camera.position.copy(newPos);
+                } else {
+                    // Try to slide along walls by preserving movement in non-colliding directions
+                    const tryX = new THREE.Vector3(newPos.x, camera.position.y, camera.position.z);
+                    const tryZ = new THREE.Vector3(camera.position.x, camera.position.y, newPos.z);
+                    
+                    // Check X movement
+                    const cameraBoxX = new THREE.Box3();
+                    cameraBoxX.setFromCenterAndSize(tryX, new THREE.Vector3(cameraSize, cameraSize, cameraSize));
+                    let collisionX = false;
+                    
+                    // Check Z movement
+                    const cameraBoxZ = new THREE.Box3();
+                    cameraBoxZ.setFromCenterAndSize(tryZ, new THREE.Vector3(cameraSize, cameraSize, cameraSize));
+                    let collisionZ = false;
+                    
+                    model.traverse((node) => {
+                        if (node.isMesh) {
+                            const meshBox = new THREE.Box3().setFromObject(node);
+                            if (cameraBoxX.intersectsBox(meshBox)) collisionX = true;
+                            if (cameraBoxZ.intersectsBox(meshBox)) collisionZ = true;
+                        }
+                    });
+                    
+                    if (!collisionX) camera.position.setX(tryX.x);
+                    if (!collisionZ) camera.position.setZ(tryZ.z);
+                }
+            } else {
+                camera.position.copy(newPos);
+            }
+        }
+
+        // Function to enhance art textures
+        function enhanceArtTexture(material) {
+            if (!material) return;
+            
+            // Handle all possible texture maps
+            const textureMaps = [
+                material.map,
+                material.normalMap,
+                material.roughnessMap,
+                material.metalnessMap,
+                material.aoMap,
+                material.emissiveMap
+            ];
+
+            textureMaps.forEach(texture => {
+                if (texture) {
+                    // Enable high-quality texture filtering
+                    texture.minFilter = THREE.LinearMipmapLinearFilter;
+                    texture.magFilter = THREE.LinearFilter;
+                    
+                    // Enable maximum anisotropic filtering for sharper textures at angles
+                    texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+                    
+                    // Enable mipmapping for better rendering at different distances
+                    texture.generateMipmaps = true;
+                    
+                    // Use correct color space for art
+                    texture.encoding = THREE.sRGBEncoding;
+                    
+                    // Enable seamless texture wrapping
+                    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+                    
+                    texture.needsUpdate = true;
+                }
+            });
+
+            // Enhance material properties for art display
+            if (material.roughness !== undefined) {
+                material.roughness = 0.5; // Balanced roughness for art surfaces
+            }
+            if (material.metalness !== undefined) {
+                material.metalness = 0.1; // Slight metallic sheen for depth
+            }
+            material.envMapIntensity = 1.0; // Good balance for environment reflections
+            
+            material.needsUpdate = true;
+        }
+
+        // Function to load a GLB model
+        function loadGLB(url) {
+            if (model) {
+                scene.remove(model);
+                model.traverse(child => {
+                    if (child.isMesh) {
+                        child.geometry.dispose();
+                        if (child.material) {
+                            if (Array.isArray(child.material)) {
+                                child.material.forEach(mat => {
+                                    if (mat.map) mat.map.dispose();
+                                    if (mat.lightMap) mat.lightMap.dispose();
+                                    if (mat.aoMap) mat.aoMap.dispose();
+                                    if (mat.emissiveMap) mat.emissiveMap.dispose();
+                                    if (mat.bumpMap) mat.bumpMap.dispose();
+                                    if (mat.normalMap) mat.normalMap.dispose();
+                                    if (mat.displacementMap) mat.displacementMap.dispose();
+                                    if (mat.roughnessMap) mat.roughnessMap.dispose();
+                                    if (mat.metalnessMap) mat.metalnessMap.dispose();
+                                    if (mat.alphaMap) mat.alphaMap.dispose();
+                                    mat.dispose();
+                                });
+                            } else {
+                                const mat = child.material;
+                                if (mat.map) mat.map.dispose();
+                                if (mat.lightMap) mat.lightMap.dispose();
+                                if (mat.aoMap) mat.aoMap.dispose();
+                                if (mat.emissiveMap) mat.emissiveMap.dispose();
+                                if (mat.bumpMap) mat.bumpMap.dispose();
+                                if (mat.normalMap) mat.normalMap.dispose();
+                                if (mat.displacementMap) mat.displacementMap.dispose();
+                                if (mat.roughnessMap) mat.roughnessMap.dispose();
+                                if (mat.metalnessMap) mat.metalnessMap.dispose();
+                                if (mat.alphaMap) mat.alphaMap.dispose();
+                                mat.dispose();
+                            }
+                        }
+                    }
+                });
+                console.log("Previous model removed and resources disposed.");
+            }
+
+            const loader = new GLTFLoader();
+            loaderInfo.textContent = 'Loading model...';
+            errorMessage.style.display = 'none';
+
+            // Add draco decoder support for compressed models
+            const dracoLoader = new DRACOLoader();
+            dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+            loader.setDRACOLoader(dracoLoader);
+
+            // Add KTX2 loader for more efficient textures
+            const ktx2Loader = new KTX2Loader();
+            ktx2Loader.setTranscoderPath('https://unpkg.com/three@0.153.0/examples/jsm/libs/basis/');
+            ktx2Loader.detectSupport(renderer);
+            loader.setKTX2Loader(ktx2Loader);
+
+            // Add mesh optimizer for better performance
+            loader.setMeshoptDecoder(MeshoptDecoder);
+
+            loader.load(
+                url,
+                function (gltf) {
+                    model = gltf.scene;
+                    
+                    // Enhance art textures on cubes
+                    let artCubeCount = 0;
+                    let enhancedTextureCount = 0;
+                    
+                    model.traverse(function (node) {
+                        if (node.isMesh && (node.name.includes('Cube') || node.name.includes('Art'))) {
+                            // Log all mesh names for debugging
+                            console.log('Found mesh:', node.name);
+                            
+                            if (node.name.includes('Cube') || node.name.includes('Art')) {
+                                console.log('Found art cube:', node.name);
+                                console.log('Material:', node.material);
+                                if (node.material) {
+                                    console.log('Texture maps:',
+                                        'diffuse:', node.material.map ? 'yes' : 'no',
+                                        'normal:', node.material.normalMap ? 'yes' : 'no',
+                                        'roughness:', node.material.roughnessMap ? 'yes' : 'no',
+                                        'metalness:', node.material.metalnessMap ? 'yes' : 'no'
+                                    );
+                                }
+                                artCubeCount++;
+                                
+                                if (Array.isArray(node.material)) {
+                                    node.material.forEach(mat => {
+                                        enhanceArtTexture(mat);
+                                        if (mat.map) enhancedTextureCount++;
+                                    });
+                                } else if (node.material) {
+                                    enhanceArtTexture(node.material);
+                                    if (node.material.map) enhancedTextureCount++;
+                                }
+                                
+                                // Enable better geometry quality for art displays
+                                if (node.geometry) {
+                                    node.geometry.computeVertexNormals();
+                                    node.geometry.attributes.normal.normalized = true;
+                                }
+                            }
+                        }
+                    });
+                    
+                    console.log(`Enhanced ${artCubeCount} art cubes with ${enhancedTextureCount} textures`);
+                    console.log('Maximum anisotropy level:', renderer.capabilities.getMaxAnisotropy());
+
+                    // Preserve original materials and textures, and enhance texture quality
+                    const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+                    model.traverse(function (node) {
+                        if (node.isMesh) {
+                            node.castShadow = true;
+                            node.receiveShadow = true;
+                            
+                            // Improve geometry smoothness
+                            if (node.geometry) {
+                                // Compute vertex normals for smooth shading
+                                node.geometry.computeVertexNormals();
+                                // Enable better normal interpolation
+                                node.geometry.attributes.normal.normalized = true;
+                                
+                                // Add more segments to curved surfaces if the geometry is low-poly
+                                if (node.geometry.type === 'CylinderGeometry' || 
+                                    node.geometry.type === 'SphereGeometry') {
+                                    node.geometry = node.geometry.clone();
+                                    node.geometry.parameters.radialSegments = Math.max(
+                                        node.geometry.parameters.radialSegments,
+                                        32
+                                    );
+                                }
+                            }
+
+                            if (node.material) {
+                                // Enable smooth shading
+                                node.material.flatShading = false;
+                                
+                                // Enhance material quality
+                                node.material.precision = 'highp';
+                                node.material.dithering = true; // Reduce color banding
+                                
+                                // Improve normal map interpretation
+                                if (node.material.normalMap) {
+                                    node.material.normalScale.set(1, 1);
+                                    node.material.normalMapType = THREE.TangentSpaceNormalMap;
+                                }
+                                
+                                // Enhance material properties
+                                if (node.material.roughness !== undefined) {
+                                    // Adjust material properties for better visual quality
+                                    node.material.roughnessMap?.repeat.set(1, 1);
+                                    node.material.metalnessMap?.repeat.set(1, 1);
+                                    node.material.envMapIntensity = 1.0;
+                                }
+                                
+                                // Apply texture improvements
+                                const textures = [
+                                    node.material.map,
+                                    node.material.normalMap,
+                                    node.material.roughnessMap,
+                                    node.material.metalnessMap,
+                                    node.material.aoMap,
+                                    node.material.displacementMap
+                                ];
+
+                                textures.forEach(texture => {
+                                    if (texture) {
+                                        texture.anisotropy = maxAnisotropy;
+                                        texture.minFilter = THREE.LinearMipmapLinearFilter;
+                                        texture.magFilter = THREE.LinearFilter;
+                                        texture.generateMipmaps = true;
+                                        // Enable seamless texture wrapping
+                                        texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+                                        texture.needsUpdate = true;
+                                    }
+                                });
+
+                                // Enable material updates
+                                node.material.needsUpdate = true;
+                            }
+
+                            // Optimize mesh rendering
+                            node.matrixAutoUpdate = false; // Optimize static meshes
+                            node.updateMatrix();
+                            
+                            // Enable frustum culling for better performance
+                            node.frustumCulled = true;
+                        }
+                    });
+
+                    // Add model to scene without modifying position or scale
+                    scene.add(model);
+                    loaderInfo.textContent = 'Model loaded successfully!';
+
+                 
+
+                    console.log("Original model position:", model.position.clone());
+                    console.log("Original model scale:", model.scale.clone());
+
+                    const box = new THREE.Box3().setFromObject(model);
+                    const center = box.getCenter(new THREE.Vector3());
+                    const size = box.getSize(new THREE.Vector3());
+
+                    console.log("Model bounding box raw size:", size.clone());
+                    console.log("Model bounding box raw center:", center.clone());
+
+                    // Center the model at the origin
+                    model.position.sub(center);
+                    console.log("Model position after centering:", model.position.clone());
+
+                    // Auto-scale model
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    let scaleFactor = 1.0; // Default scale
+                    if (maxDim > 0.00001 && isFinite(maxDim)) {
+                        scaleFactor = 5 / maxDim;
+                        model.scale.setScalar(scaleFactor);
+                        console.log("Applied scale factor:", scaleFactor, " (based on maxDim:", maxDim, ")");
+                    } else {
+                        console.warn("Could not calculate valid scale factor. maxDim:", maxDim, ". Using default scale 1.0.");
+                        model.scale.setScalar(1.0);
+                    }
+                    console.log("Model scale after scaling:", model.scale.clone());
+
+                    // Enable shadows and update materials
+                    model.traverse(function (node) {
+                        if (node.isMesh) {
+                            node.castShadow = true;
+                            node.receiveShadow = true;
+                            if (node.material) {
+                                if (node.material.map) node.material.map.colorSpace = THREE.SRGBColorSpace;
+                                node.material.needsUpdate = true;
+                            }
+                        }
+                        if (node.isLight) {
+                            node.intensity = 1;
+                            console.log('Model contains a light:', node);
+                        }
+                    });
+
+                    scene.add(model);
+                    loaderInfo.textContent = 'Model loaded successfully!';
+                    console.log("Model added to scene. Final position:", model.position.clone(), "Final scale:", model.scale.clone());
+
+                    // Adjust camera to view the model
+                    const finalBox = new THREE.Box3().setFromObject(model);
+                    const finalSize = finalBox.getSize(new THREE.Vector3());
+                    const finalCenter = finalBox.getCenter(new THREE.Vector3());
+
+                    console.log("Final model box size:", finalSize.clone());
+                    console.log("Final model box center:", finalCenter.clone());
+
+                    // Find the floor mesh and create markers
+                    model.traverse(function (node) {
+                        if (node.isMesh && node.name === 'SM_Floor_1500_01a15') {
+                            createFloorMarkers(node);
+                        }
+                    });
+
+                    // Set controls target and camera position to user-specified starting view
+                    controls.target.set(4.089425786817376, -2.5246499558642443, 
+                    40.85215282367115);
+                    camera.position.set(3.4851652041292187, -2.500573032941849, 40.87994022312445); // <-- Set your desired starting camera position here
+                    camera.lookAt(controls.target);
+                    controls.update();
+
+                    // Remove auto camera positioning logic, always use user-specified starting position
+
+                    camera.lookAt(finalCenter);
+                    controls.update();
+                    console.log("Camera position:", camera.position.clone(), "Controls target:", controls.target.clone());
+
+                    // --- Add a black plane above the ceiling panels to cover the gaps ---
+                    // Find the bounding box of all SM_Drop_Ceiling panels
+                    let ceilingMin = new THREE.Vector3(Infinity, Infinity, Infinity);
+                    let ceilingMax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+                    model.traverse((node) => {
+                        if (node.isMesh && node.name.startsWith('SM_Drop_Ceiling')) {
+                            node.updateWorldMatrix(true, false);
+                            const box = new THREE.Box3().setFromObject(node);
+                            ceilingMin.min(box.min);
+                            ceilingMax.max(box.max);
+                        }
+                    });
+                    // Only add the plane if we found at least one panel
+                    if (ceilingMin.x < ceilingMax.x && ceilingMin.y < ceilingMax.y && ceilingMin.z < ceilingMax.z) {
+                        const width = ceilingMax.x - ceilingMin.x + 0.1;
+                        const depth = ceilingMax.z - ceilingMin.z + 0.1;
+                        const y = ceilingMax.y + 0.01; // Slightly above the panels
+                        const geometry = new THREE.PlaneGeometry(width, depth);
+                        const material = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+                        const blackPlane = new THREE.Mesh(geometry, material);
+                        blackPlane.position.set(
+                            (ceilingMin.x + ceilingMax.x) / 2,
+                            y,
+                            (ceilingMin.z + ceilingMax.z) / 2
+                        );
+                        blackPlane.rotation.x = -Math.PI / 2; // Make it horizontal
+                        blackPlane.renderOrder = -1; // Render below the panels
+                        scene.add(blackPlane);
+                    }
+                },
+                function (xhr) {
+                    if (xhr.lengthComputable) {
+                        const percentComplete = (xhr.loaded / xhr.total) * 100;
+                        loaderInfo.textContent = `Loading: ${Math.round(percentComplete)}%`;
+                    }
+                },
+                function (error) {
+                    handleModelError(url, error);
+                }
+            );
+        }
+
+
+
+        // Enable first-person controls by default
+        fpControls.enabled = true;
+
+        // Add default model URL
+        const DEFAULT_MODEL_URL = 'https://d1i8eo3h0d5k8u.cloudfront.net/Untitled1.glb';
+
+        // Function to handle model loading errors
+        function handleModelError(url, error) {
+            console.error('Error loading model:', error);
+            loaderInfo.textContent = 'Error loading model.';
+            errorMessage.textContent = 'Failed to load GLB file. Please ensure CORS is enabled on the S3 bucket and the file is publicly accessible.';
+            errorMessage.style.display = 'block';
+        }
+
+        // Function to apply the optimal art gallery settings shown in the screenshot
+        function applyOptimalGallerySettings() {
+            // Apply once the GUI is initialized and model is loaded
+            if (!gui || !model) {
+                console.log("Waiting for GUI and model to initialize...");
+                setTimeout(applyOptimalGallerySettings, 1000);
+                return;
+            }
+            
+            console.log("Applying optimal art gallery settings...");
+            
+            // Enable first-person controls only after everything is loaded
+            try {
+                if (typeof fpControls !== 'undefined') {
+                    enableFirstPersonControls(true);
+                }
+            } catch (e) {
+                console.warn("Could not enable first-person controls:", e);
+            }
+            
+            // Hemisphere Light settings
+            const hemiLight = scene.children.find(child => child instanceof THREE.HemisphereLight);
+            if (hemiLight) {
+                hemiLight.color.set(0xffffff);
+                hemiLight.groundColor.set(0x444444);
+                hemiLight.intensity = 0;
+            }
+            
+            // Directional Light settings
+            const dirLight = scene.children.find(child => child instanceof THREE.DirectionalLight);
+            if (dirLight) {
+                dirLight.color.set(0xffffff);
+                dirLight.intensity = 4.23;
+                dirLight.position.set(-50, 16.1, -50);
+            }
+            
+            // Point Light settings
+            const pointLight = scene.children.find(child => child instanceof THREE.PointLight);
+            if (pointLight) {
+                pointLight.intensity = 1.38; // Based on the screenshot
+                pointLight.position.set(-15.9, -6.1, 3.3); // Default position
+            }
+            
+            // Floor Material settings
+            let floorParams = {
+                roughness: 0.8,
+                metalness: 0.88,
+                envMapIntensity: 0.6, // Reflection
+                emissiveIntensity: 0.74,
+                emissiveColor: 0x000000
+            };
+            
+            // Apply settings to floor materials
+            model.traverse(node => {
+                if (node.isMesh && node.name && node.name.toLowerCase().includes('floor')) {
+                    let mat = node.material;
+                    if (Array.isArray(mat)) {
+                        mat.forEach(m => updateMaterial(m, floorParams));
+                    } else {
+                        updateMaterial(mat, floorParams);
+                    }
+                }
+            });
+            
+            // Renderer settings
+            renderer.toneMappingExposure = 1.1;
+            renderer.toneMapping = THREE.CineonToneMapping;
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            
+            console.log("Optimal gallery settings applied!");
+        }
+
+        function updateMaterial(material, params) {
+            if (!material) return;
+            
+            if ('roughness' in material) material.roughness = params.roughness;
+            if ('metalness' in material) material.metalness = params.metalness;
+            if ('envMapIntensity' in material) material.envMapIntensity = params.envMapIntensity;
+            if ('emissiveIntensity' in material) material.emissiveIntensity = params.emissiveIntensity;
+            if ('emissive' in material) material.emissive.set(params.emissiveColor);
+            
+            material.needsUpdate = true;
+        }
+
+        // Initialize the scene
+        init();
+
+        // Initialize the scene on window load
+        window.addEventListener('load', () => {
+            // Load model first, then apply settings
+            loadGLB(DEFAULT_MODEL_URL);
+            
+            // Wait for everything to be initialized before applying settings
+            setTimeout(() => {
+                // Apply optimal settings
+                applyOptimalGallerySettings();
+            }, 3000);
+        });
+
+        // Store invisible circles for raycasting
+        // (Declaration moved to top of script; do not redeclare here)
+
+        function createFloorMarker(position) {
+            // Ring (donut) geometry: inner radius, outer radius, segments
+            const innerRadius = MARKER_RADIUS * 0.6;
+            const outerRadius = MARKER_RADIUS;
+            const ringGeometry = new THREE.RingGeometry(innerRadius, outerRadius, 32);
+            const ringMaterial = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.85,
+                side: THREE.DoubleSide
+            });
+            const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+            ring.position.copy(position);
+            ring.rotation.x = -Math.PI / 2;
+            scene.add(ring);
+            floorMarkers.push(ring);
+
+            // Invisible circle for raycasting
+            const circleGeometry = new THREE.CircleGeometry(outerRadius, 32);
+            const circleMaterial = new THREE.MeshBasicMaterial({ visible: false });
+            const circle = new THREE.Mesh(circleGeometry, circleMaterial);
+            circle.position.copy(position);
+            circle.rotation.x = -Math.PI / 2;
+            scene.add(circle);
+            raycastMarkers.push(circle);
+
+            // Attach reference so we can get the ring from the circle
+            circle.userData.ring = ring;
+
+            return ring;
+        }
+
+        // --- Visible crosshair for pointer lock mode ---
+        const crosshair = document.createElement('div');
+        crosshair.style.position = 'fixed';
+        crosshair.style.left = '50%';
+        crosshair.style.top = '50%';
+        crosshair.style.transform = 'translate(-50%, -50%)';
+        crosshair.style.width = '16px';
+        crosshair.style.height = '16px';
+        crosshair.style.borderRadius = '50%';
+        crosshair.style.background = 'white';
+        crosshair.style.opacity = '0.8';
+        crosshair.style.pointerEvents = 'none';
+        crosshair.style.zIndex = 9999;
+        crosshair.style.boxShadow = '0 0 8px 2px rgba(0,0,0,0.12)';
+        crosshair.style.display = 'none';
+        document.body.appendChild(crosshair);
+
+        // --- Highlight marker under crosshair and crosshair color ---
+        let lastHighlightedRing = null;
+        function highlightMarkerAndCrosshair() {
+            // Remove highlight from previous ring
+            if (lastHighlightedRing) {
+                lastHighlightedRing.material.color.setHex(0xffffff);
+                lastHighlightedRing.material.opacity = 0.85;
+                lastHighlightedRing = null;
+            }
+            crosshair.style.background = 'white';
+            if (!raycastMarkers || raycastMarkers.length === 0) return;
+            if (document.pointerLockElement !== canvasContainer) return;
+            // Raycast from center
+            const mouse = new THREE.Vector2(0, 0);
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(mouse, camera);
+            const visibleMarkers = raycastMarkers.filter(m => m.visible);
+            const intersects = raycaster.intersectObjects(visibleMarkers, false);
+            if (intersects.length > 0) {
+                const circle = intersects[0].object;
+                const ring = circle.userData.ring;
+                ring.material.color.setHex(0x00ff00);
+                ring.material.opacity = 1.0;
+                lastHighlightedRing = ring;
+                crosshair.style.background = '#00ff00';
+                // Log coordinates for user
+                console.log('Highlighted marker coordinates:', ring.position.clone());
+            }
+        }
+        // Call highlightMarkerAndCrosshair every frame
+        const oldAnimate = animate;
+        animate = function() {
+            highlightMarkerAndCrosshair();
+            oldAnimate();
+        };
+
+
+        function updateCrosshairVisibility() {
+            crosshair.style.display = (document.pointerLockElement === canvasContainer) ? 'block' : 'none';
+        }
+        document.addEventListener('pointerlockchange', updateCrosshairVisibility);
+        document.addEventListener('pointerlockerror', updateCrosshairVisibility);
+
+        // --- Click-to-move functionality (pointer lock first-person) ---
+        let moveTarget = null;
+        let moveStart = null;
+        let moveStartTime = 0;
+        const MOVE_DURATION = 600; // ms
+
+        // --- Click-to-move functionality (pointer lock first-person) ---
+        let isMoving = false; // Flag to track if camera is currently animating
+
+        // Listen for left click in pointer lock mode (document-level)
+        document.addEventListener('click', function(event) {
+            // Only respond to left mouse button
+            if (event.button !== 0) return;
+            // Only when pointer lock is active and not already moving
+            if (document.pointerLockElement === canvasContainer && !isMoving && fpControls.enabled) {
+                console.log("Click detected in pointer lock mode");
+                // Raycast from center of screen
+                const mouse = new THREE.Vector2(0, 0); // center
+                const raycaster = new THREE.Raycaster();
+                raycaster.setFromCamera(mouse, camera);
+                // Only test visible raycast markers
+                const visibleMarkers = raycastMarkers.filter(m => m.userData.ring.visible);
+                const intersects = raycaster.intersectObjects(visibleMarkers, false);
+                if (intersects.length > 0) {
+                    const circle = intersects[0].object;
+                    const marker = circle.userData.ring;
+                    console.log("Marker clicked! Target position:", marker.position.clone());
+                    // Highlight the ring
+                    marker.material.color.setHex(0x00ff00);
+                    marker.material.opacity = 1.0;
+                    // Store current position as starting point
+                    moveStart = camera.position.clone();
+                    // Set target position (keeping current camera height)
+                    moveTarget = marker.position.clone();
+                    moveTarget.y = camera.position.y; // Keep camera at current height
+                    // Start the movement animation
+                    moveStartTime = performance.now();
+                    isMoving = true;
+                    // Temporarily disable controls during movement
+                    fpControls.moveForward = false;
+                    fpControls.moveBackward = false;
+                    fpControls.moveLeft = false;
+                    fpControls.moveRight = false;
+                    console.log("Starting camera movement from", moveStart, "to", moveTarget);
+                    // Start animation
+                    requestAnimationFrame(animateCameraMove);
+                } else {
+                    console.log("Click detected but no marker was hit");
+                }
+            }
+        });
+
+        function animateCameraMove() {
+            if (!moveTarget || !moveStart || !isMoving) return;
+            const now = performance.now();
+            const elapsed = now - moveStartTime;
+            const t = Math.min(elapsed / MOVE_DURATION, 1);
+            // Use smooth easing function
+            const easeT = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+            camera.position.lerpVectors(moveStart, moveTarget, easeT);
+            console.log("Animation frame: t=", t, "position=", camera.position.clone());
+            if (t < 1) {
+                requestAnimationFrame(animateCameraMove);
+            } else {
+                console.log("Movement completed. Final position:", camera.position.clone());
+                camera.position.copy(moveTarget);
+                moveTarget = null;
+                moveStart = null;
+                isMoving = false;
+            }
+        }
+
+
+        function createFloorMarkers(floor) {
+            // Get floor dimensions
+            const bbox = new THREE.Box3().setFromObject(floor);
+            const size = new THREE.Vector3();
+            bbox.getSize(size);
+
+            // Calculate number of markers needed
+            const numMarkersX = Math.floor(size.x / MARKER_SPACING);
+            const numMarkersZ = Math.floor(size.z / MARKER_SPACING);
+
+            // Calculate starting position (center of the floor)
+            const startX = bbox.min.x + (size.x % MARKER_SPACING) / 2 + MARKER_SPACING/2;
+            const startZ = bbox.min.z + (size.z % MARKER_SPACING) / 2 + MARKER_SPACING/2;
+            const y = bbox.min.y + 0.01; // Slightly above the floor
+
+            // Create grid of markers
+            for (let x = 0; x < numMarkersX; x++) {
+                for (let z = 0; z < numMarkersZ; z++) {
+                    const position = new THREE.Vector3(
+                        startX + x * MARKER_SPACING,
+                        y,
+                        startZ + z * MARKER_SPACING
+                    );
+                    createFloorMarker(position);
+                }
+            }
+        }
+
+
+
+    </script>
+</body>
+</html>
